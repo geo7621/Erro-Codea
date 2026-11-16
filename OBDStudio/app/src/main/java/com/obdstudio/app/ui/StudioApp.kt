@@ -103,7 +103,7 @@ fun StudioApp(controller: DiagnosticController) {
                 BrandHeader(state)
                 when (tab) {
                     0 -> OverviewTab(state, onConnect = { tab = 3 }, onScan = { controller.scanEngineCodes(); tab = 2 })
-                    1 -> SystemsTab(state)
+                    1 -> SystemsTab(state, onDiscover = controller::discoverResponders)
                     2 -> FaultsTab(state, onScan = controller::scanEngineCodes, onClear = { confirmClear = true })
                     else -> AdapterTab(state, onRefresh = requirePermission, onConnect = controller::connect, onDisconnect = controller::disconnect)
                 }
@@ -170,6 +170,22 @@ private fun OverviewTab(state: DiagnosticState, onConnect: () -> Unit, onScan: (
             }
         }
         SectionTitle("Live telemetry", "Updates when the ECU responds")
+        val mil = state.milStatus
+        if (mil != null) {
+            StudioCard {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Check engine indicator", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("Reported by generic OBD-II monitor (PID 01)", fontSize = 11.sp, color = Muted)
+                    }
+                    Text(if (mil.illuminated) "MIL ON" else "MIL OFF",
+                        color = if (mil.illuminated) Amber else Teal,
+                        fontWeight = FontWeight.Black, fontSize = 13.sp)
+                }
+                Text("Confirmed emissions DTC count reported by ECU: ${mil.confirmedCodeCount}",
+                    fontSize = 12.sp, color = Muted)
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MetricCard("ENGINE RPM", state.live.reading(0x0C), "rpm", Modifier.weight(1f), Teal)
             MetricCard("VEHICLE SPEED", state.live.reading(0x0D), "km/h", Modifier.weight(1f), Color(0xFF4D6CBB))
@@ -190,6 +206,26 @@ private fun OverviewTab(state: DiagnosticState, onConnect: () -> Unit, onScan: (
             if (state.rpmPoints.size > 1) RpmGraph(state.rpmPoints)
             else Box(Modifier.fillMaxWidth().height(130.dp).clip(RoundedCornerShape(14.dp)).background(CanvasColor), contentAlignment = Alignment.Center) {
                 Text("Chart appears after receiving RPM data", color = Muted, fontSize = 12.sp)
+            }
+        }
+        SectionTitle("Additional live sensors", "Only PIDs advertised by your vehicle")
+        val extra = state.live.filter { it.pid in state.activePids && it.pid !in setOf(0x0C, 0x0D, 0x05, 0x42) }
+        if (extra.isEmpty()) {
+            StatusNote("Connect to show additional live data supported by your ECU.")
+        } else {
+            StudioCard(padding = 4.dp) {
+                extra.forEachIndexed { index, sensor ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(sensor.name, modifier = Modifier.weight(1f), fontSize = 13.sp, color = Ink)
+                        Text(sensor.value?.let {
+                            val rounded = if (sensor.unit in setOf("g/s", "L/h"))
+                                String.format(Locale.US, "%.1f", it) else String.format(Locale.US, "%.0f", it)
+                            "$rounded ${sensor.unit}"
+                        } ?: "--", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Navy)
+                    }
+                    if (index != extra.lastIndex) HorizontalDivider(color = Line)
+                }
             }
         }
         StudioCard {
@@ -227,10 +263,34 @@ private fun RpmGraph(readings: List<Float>) {
 }
 
 @Composable
-private fun SystemsTab(state: DiagnosticState) {
+private fun SystemsTab(state: DiagnosticState, onDiscover: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SectionTitle("Vehicle systems", "Complete module catalog")
         StatusNote("Only modules with verified responses are marked accessible. An advanced adapter alone does not provide proprietary ECU addresses or protocols.")
+        StudioCard {
+            Text("Discover responding ECUs", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text("Read-only CAN responder survey using generic Mode 01. This does not identify transmission, ABS or airbag modules.",
+                color = Muted, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onDiscover, enabled = state.ecuDetected && !state.scanning,
+                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                Text(if (state.scanning) "Communicating…" else "Detect OBD responding ECU IDs")
+            }
+            if (state.responderMessage.isNotBlank()) {
+                Text(state.responderMessage, color = Muted, fontSize = 12.sp)
+            }
+            if (state.responderIds.isNotEmpty()) {
+                state.responderIds.forEach { id ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("CAN ID $id", fontSize = 14.sp, color = Navy, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f))
+                        Text("OBD RESPONDER", fontSize = 10.sp, color = Teal)
+                    }
+                }
+            }
+            Text("Unknown or non-responding systems remain unverified — not fault-free.",
+                color = Muted, fontSize = 11.sp)
+        }
         ModuleCatalog.all.groupBy { it.group }.forEach { (group, modules) ->
             Text(group.uppercase(), fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Muted, letterSpacing = 1.sp, modifier = Modifier.padding(top = 5.dp))
             StudioCard(padding = 4.dp) {
@@ -268,6 +328,13 @@ private fun FaultsTab(state: DiagnosticState, onScan: () -> Unit, onClear: () ->
                     Text("Stored · Pending · Permanent", color = Muted, fontSize = 12.sp)
                 }
                 Text(if (state.lastScanComplete) "${state.codes.size}" else "--", fontSize = 30.sp, color = if (state.codes.isEmpty()) Teal else Amber, fontWeight = FontWeight.Black)
+            }
+            if (state.lastScanComplete) {
+                Spacer(Modifier.height(6.dp))
+                Text("Pending codes: ${if (state.pendingSupported == true) "ECU responded" else "No response / unsupported"}",
+                    fontSize = 12.sp, color = Muted)
+                Text("Permanent codes: ${if (state.permanentSupported == true) "ECU responded" else "No response / unsupported"}",
+                    fontSize = 12.sp, color = Muted)
             }
             Spacer(Modifier.height(12.dp))
             Button(onClick = onScan, enabled = state.ecuDetected && !state.scanning, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {

@@ -38,6 +38,12 @@ data class DiagnosticState(
     val adapterVersion: String = "",
     val protocol: String = "",
     val voltage: Double? = null,
+    val milStatus: MilStatus? = null,
+    val responderIds: List<String> = emptyList(),
+    val respondersChecked: Boolean = false,
+    val responderMessage: String = "",
+    val pendingSupported: Boolean? = null,
+    val permanentSupported: Boolean? = null,
     val activePids: Set<Int> = emptySet(),
     val live: List<LiveParameter> = defaultParameters,
     val rpmPoints: List<Float> = emptyList(),
@@ -59,7 +65,18 @@ val defaultParameters = listOf(
     LiveParameter(0x0B,"Intake pressure","kPa"),
     LiveParameter(0x06,"Short fuel trim","%"),
     LiveParameter(0x07,"Long fuel trim","%"),
-    LiveParameter(0x2F,"Fuel level","%")
+    LiveParameter(0x2F,"Fuel level","%"),
+    LiveParameter(0x10,"Airflow (MAF)","g/s"),
+    LiveParameter(0x33,"Barometric pressure","kPa"),
+    LiveParameter(0x0A,"Fuel pressure","kPa"),
+    LiveParameter(0x1F,"Engine runtime","s"),
+    LiveParameter(0x31,"Distance since codes cleared","km"),
+    LiveParameter(0x46,"Ambient air temperature","°C"),
+    LiveParameter(0x5C,"Engine oil temperature","°C"),
+    LiveParameter(0x5E,"Engine fuel rate","L/h"),
+    LiveParameter(0x2C,"Commanded EGR","%"),
+    LiveParameter(0x2D,"EGR error","%"),
+    LiveParameter(0x52,"Ethanol content","%")
 )
 
 class DiagnosticController(private val context: Context) {
@@ -99,7 +116,10 @@ class DiagnosticController(private val context: Context) {
         connectJob?.cancel()
         pollJob?.cancel()
         transport.close()
-        mutableState.update { it.copy(connecting = true, connected = false, ecuDetected = false, codes = emptyList(), message = "Connecting to ${device.name}...") }
+        mutableState.update { it.copy(connecting = true, connected = false, ecuDetected = false,
+            codes = emptyList(), responderIds = emptyList(), respondersChecked = false, responderMessage = "",
+            milStatus = null, pendingSupported = null, permanentSupported = null,
+            message = "Connecting to ${device.name}...") }
         connectJob = scope.launch {
             try {
                 transport.open(device.address)
@@ -122,11 +142,14 @@ class DiagnosticController(private val context: Context) {
                 }.getOrDefault(emptySet()) else emptySet()
                 val available = firstBlock + secondBlock + thirdBlock
                 val protocol = runCatching { transport.request("ATDP").replace(">", "").trim() }.getOrDefault("Unknown")
+                val mil = if (0x01 in available) runCatching {
+                    ObdCodec.milStatus(transport.request("0101", 5000))
+                }.getOrNull() else null
                 mutableState.update {
                     it.copy(
                         connecting = false, connected = true, ecuDetected = detected,
                         adapterName = device.name, adapterVersion = version, protocol = protocol,
-                        voltage = voltage, activePids = available,
+                        voltage = voltage, milStatus = mil, activePids = available,
                         message = if (detected) "Engine OBD-II responding — ready to scan" else "Adapter connected, but no engine ECU response. Check ignition and compatibility."
                     )
                 }
@@ -143,8 +166,17 @@ class DiagnosticController(private val context: Context) {
         pollJob = scope.launch {
             val supported = mutableState.value.activePids
             val watched = defaultParameters.filter { it.pid in supported }
+            val priorityIds = setOf(0x0C, 0x0D, 0x05, 0x42)
+            val priority = watched.filter { it.pid in priorityIds }
+            val secondary = watched.filter { it.pid !in priorityIds }
+            var secondaryIndex = 0
             while (isActive && mutableState.value.connected && mutableState.value.ecuDetected) {
-                for (item in watched) {
+                val extras = if (secondary.isEmpty()) emptyList() else {
+                    List(minOf(2, secondary.size)) { offset ->
+                        secondary[(secondaryIndex + offset) % secondary.size]
+                    }.also { secondaryIndex = (secondaryIndex + it.size) % secondary.size }
+                }
+                for (item in priority + extras) {
                     if (!isActive) break
                     val result = runCatching { transport.request("01%02X".format(Locale.US, item.pid), 2800) }.getOrNull()
                     val number = result?.let { ObdCodec.pidValue(it, item.pid) }
@@ -174,9 +206,14 @@ class DiagnosticController(private val context: Context) {
                 if (!ObdCodec.hasModeResponse(rawStored, 0x43)) error("No valid Mode 03 response; cannot confirm stored-code status")
                 val stored = ObdCodec.troubleCodes(rawStored, 0x43)
                 val rawPending = runCatching { transport.request("07", 9000) }.getOrDefault("NO DATA")
-                val pending = if (ObdCodec.hasModeResponse(rawPending, 0x47)) ObdCodec.troubleCodes(rawPending, 0x47) else emptyList()
+                val pendingAvailable = ObdCodec.hasModeResponse(rawPending, 0x47)
+                val pending = if (pendingAvailable) ObdCodec.troubleCodes(rawPending, 0x47) else emptyList()
                 val rawPermanent = runCatching { transport.request("0A", 9000) }.getOrDefault("NO DATA")
-                val permanent = if (ObdCodec.hasModeResponse(rawPermanent, 0x4A)) ObdCodec.troubleCodes(rawPermanent, 0x4A) else emptyList()
+                val permanentAvailable = ObdCodec.hasModeResponse(rawPermanent, 0x4A)
+                val permanent = if (permanentAvailable) ObdCodec.troubleCodes(rawPermanent, 0x4A) else emptyList()
+                val mil = if (0x01 in mutableState.value.activePids) runCatching {
+                    ObdCodec.milStatus(transport.request("0101", 5000))
+                }.getOrNull() else null
                 val codes = buildList {
                     stored.forEach { add(FaultCode(it, "Stored", TroubleCodeDescriptions.explain(it))) }
                     pending.forEach { add(FaultCode(it, "Pending", TroubleCodeDescriptions.explain(it))) }
@@ -184,11 +221,52 @@ class DiagnosticController(private val context: Context) {
                 }
                 withContext(Dispatchers.IO) { db.insert(mutableState.value.adapterName, stored, pending, permanent) }
                 refreshHistory()
-                mutableState.update { it.copy(scanning = false, codes = codes, lastScanComplete = true, message = "Generic OBD scan: ${codes.size} code entries. Pending/permanent unsupported if no response. Other systems were NOT scanned.") }
+                mutableState.update { it.copy(scanning = false, codes = codes, lastScanComplete = true,
+                    pendingSupported = pendingAvailable, permanentSupported = permanentAvailable,
+                    milStatus = mil ?: it.milStatus,
+                    message = "Generic emissions scan: ${codes.size} code entries. Pending: ${if (pendingAvailable) "read" else "no response"}; permanent: ${if (permanentAvailable) "read" else "no response"}. Other systems NOT scanned.") }
             } catch (e: Exception) {
                 mutableState.update { it.copy(scanning = false, lastScanComplete = false, message = "Scan failed: ${e.message}") }
             } finally {
                 if (mutableState.value.connected && mutableState.value.ecuDetected) startPolling()
+            }
+        }
+    }
+
+    /** A generic CAN responder survey; does not identify proprietary modules. */
+    fun discoverResponders() {
+        if (!mutableState.value.ecuDetected || mutableState.value.scanning) return
+        workJob?.cancel()
+        workJob = scope.launch {
+            mutableState.update { it.copy(scanning = true, respondersChecked = false,
+                responderMessage = "Discovering generic OBD responders…", message = "Discovering generic OBD responders…") }
+            pollJob?.cancelAndJoin()
+            var headersEnabled = false
+            try {
+                val enabled = transport.request("ATH1", 3000)
+                if (enabled.contains("?")) error("Adapter does not support CAN header display")
+                headersEnabled = true
+                val reply = transport.request("0100", 10000)
+                val ids = CanResponderCodec.responseIds(reply)
+                val summary = if (ids.isEmpty())
+                    "No CAN responder IDs recognized. This does not prove that other modules are absent."
+                    else "${ids.size} generic OBD responding CAN IDs detected; ECU identity is not verified."
+                mutableState.update { it.copy(responderIds = ids, respondersChecked = true,
+                    responderMessage = summary, message = summary) }
+            } catch (e: Exception) {
+                mutableState.update { it.copy(respondersChecked = false,
+                    responderMessage = "Discovery unavailable: ${e.message}",
+                    message = "Discovery unavailable: ${e.message}") }
+            } finally {
+                if (headersEnabled) {
+                    // Restore the header-free format required by the existing live PID reader.
+                    val restored = runCatching { transport.request("ATH0", 3000) }.isSuccess
+                    if (!restored) mutableState.update { it.copy(
+                        responderMessage = "Could not restore adapter headers; disconnect and reconnect.",
+                        message = "Adapter configuration uncertain. Reconnect before continuing.") }
+                    else if (mutableState.value.connected && mutableState.value.ecuDetected) startPolling()
+                } else if (mutableState.value.connected && mutableState.value.ecuDetected) startPolling()
+                mutableState.update { it.copy(scanning = false) }
             }
         }
     }
@@ -226,7 +304,9 @@ class DiagnosticController(private val context: Context) {
         transport.close()
         mutableState.update { old ->
             old.copy(connecting = false, connected = false, ecuDetected = false, adapterName = "", protocol = "", activePids = emptySet(),
-                voltage = null, live = defaultParameters, rpmPoints = emptyList(), codes = emptyList(), lastScanComplete = false, scanning = false,
+                voltage = null, milStatus = null, responderIds = emptyList(), respondersChecked = false,
+                responderMessage = "", pendingSupported = null, permanentSupported = null,
+                live = defaultParameters, rpmPoints = emptyList(), codes = emptyList(), lastScanComplete = false, scanning = false,
                 message = "Disconnected")
         }
     }

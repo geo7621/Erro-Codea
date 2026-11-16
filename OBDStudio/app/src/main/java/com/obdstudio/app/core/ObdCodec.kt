@@ -2,6 +2,8 @@ package com.obdstudio.app.core
 
 import java.util.Locale
 
+data class MilStatus(val illuminated: Boolean, val confirmedCodeCount: Int)
+
 /** Defensive parser for ELM327 prompt-delimited responses (single responder / ordinary PID frames). */
 object ObdCodec {
     private fun hexOnly(input: String) = input.uppercase(Locale.US).filter { it in '0'..'9' || it in 'A'..'F' }
@@ -43,14 +45,25 @@ object ObdCodec {
         return when (pid) {
             0x0C -> if (values.size > 1) (a * 256 + b) / 4.0 else null
             0x0D -> a
-            0x05, 0x0F -> a - 40
-            0x04, 0x11, 0x2F -> a * 100 / 255
-            0x0B -> a
-            0x06, 0x07, 0x08, 0x09 -> (a - 128) * 100 / 128
+            0x05, 0x0F, 0x46, 0x5C -> a - 40
+            0x04, 0x11, 0x2F, 0x2C, 0x52 -> a * 100 / 255
+            0x0B, 0x33 -> a
+            0x0A -> a * 3
+            0x10 -> if (values.size > 1) (a * 256 + b) / 100.0 else null
+            0x1F, 0x31 -> if (values.size > 1) a * 256 + b else null
+            0x5E -> if (values.size > 1) (a * 256 + b) / 20.0 else null
+            0x06, 0x07, 0x08, 0x09, 0x2D -> (a - 128) * 100 / 128
             0x0E -> a / 2 - 64
             0x42 -> if (values.size > 1) (a * 256 + b) / 1000 else null
             else -> null
         }
+    }
+
+    /** Standard Mode 01 PID 01, byte A: MIL bit and confirmed-emissions DTC count. */
+    fun milStatus(raw: String): MilStatus? {
+        val data = payload(raw, 0x41, 0x01) ?: return null
+        if (data.size < 4) return null
+        return MilStatus((data[0] and 0x80) != 0, data[0] and 0x7F)
     }
 
     fun adapterVoltage(raw: String): Double? =

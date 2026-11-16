@@ -1,13 +1,21 @@
-# OBD Studio — Bluetooth-first Android Diagnostics (v0.1)
+# OBD Studio — Bluetooth-first Android Diagnostics (v0.2)
 
-A native Kotlin / Jetpack Compose diagnostic application. **No account, subscription, advertisements, INTERNET permission, location permission, or cloud backend.** All current scan history is stored on-device using SQLite.
+A native Kotlin / Jetpack Compose diagnostic application. The v0.2 **Beta** package (`com.obdstudio.app.beta`) installs beside the proven v0.1 build so no uninstall or loss of previous scan history is required. This beta keeps its own local SQLite history. **No account, subscription, advertisements, INTERNET permission, location permission, or cloud backend.** All current scan history is stored on-device using SQLite.
+
+## What's new in v0.2
+
+- **Read-only CAN responder discovery** on the Systems screen: asks the generic `0100` question with headers enabled, displays responding OBD CAN IDs and restores adapter header settings. **Responder IDs are not decoded into proprietary system names.** A scan that does not find a module does not mean it is absent or fault-free.
+- **MIL/check-engine indicator** and the generic OBD confirmed DTC count from Mode 01 PID 01.
+- **Expanded live sensor list** including MAF, ambient temperature, oil temperature, fuel rate and other supported PIDs. Secondary PIDs are rotated to keep RPM/speed polling responsive.
+- **Scan response transparency**: notes when Mode 07 pending and Mode 0A permanent DTC responses are unavailable; a missing response is not a clean bill of health.
+- Additional unit tests for the CAN responder decoder, MIL data and new sensors.
 
 ## What actually works in this source release
 
 - Lists **already-paired** Bluetooth Classic devices using Android's Nearby Devices permission.
 - Connects to ELM327-compatible **Bluetooth Classic SPP** hardware over RFCOMM (UUID `00001101-0000-1000-8000-00805F9B34FB`). BLE-only dongles are not supported yet.
 - Initializes common ELM327 commands, detects an OBD engine ECU by its reply to `0100`, reads negotiated protocol and the adapter's reported supply voltage.
-- Discovers supported Mode 01 PID sets at `00`, `20`, `40`; polls real-time RPM, speed, coolant temperature, voltage and additional supported data.
+- Discovers supported Mode 01 PID sets at `00`, `20`, `40`; polls real-time RPM, speed, coolant temperature, voltage and additional supported data (availability depends on vehicle).
 - Reads generic **emissions / powertrain** stored (`03`), pending (`07`), and permanent (`0A`) trouble codes; provides an initial small built-in explanation dictionary.
 - Clears DTCs **only after explicit confirmation**, using service `04`; clears readiness and freeze-frame data too.
 - Stores completed scan history in local SQLite.
@@ -18,7 +26,7 @@ A native Kotlin / Jetpack Compose diagnostic application. **No account, subscrip
 
 - Manufacturer-specific scans (TCM, ABS, SRS, BCM, immobilizer, etc.) **are not implemented** in v0.1. They are present in the catalog but correctly labeled `PROFILE NEEDED`. We do not report unsupported systems as healthy.
 - Wi-Fi, Bluetooth LE, advanced J2534/DoIP interfaces, manufacturer-specific coding and active tests.
-- Multi-ECU / ISO-TP multi-frame assembly is incomplete for extended diagnostic messages. Mode 01 simple PID parsing and common simple DTC responses are included.
+- The responder survey collects basic generic CAN identifiers only. Manufacturer-specific module probing, ECU mapping, multi-ECU data consolidation and ISO-TP multi-frame assembly are **not implemented**. Mode 01 simple PID parsing and common simple DTC responses are included.
 - VIN identification, UDS / KWP / J1939 diagnostics, advanced manufacturer trouble-code dictionaries.
 - Hardware/vehicle validation, instrumentation test suite and signed release APK.
 
@@ -34,7 +42,7 @@ gradle :app:assembleDebug
 
 The unsigned-for-distribution debug APK will appear at `app/build/outputs/apk/debug/app-debug.apk`. Android Studio: **Build → Build APK(s)**.
 
-The folder `.github/workflows/android-debug.yml` includes a reproducible build on GitHub Actions and uploads the debug APK artifact when this project is at the **repository root**. This temporary feature branch also includes a root-level GitHub workflow to build from its `OBDStudio/` subdirectory.
+The folder `.github/workflows/android-debug.yml` includes a reproducible build on GitHub Actions and uploads the debug APK artifact when this project is at the **repository root**. The linked temporary GitHub branch also has a **root-level** workflow to build this project from its `OBDStudio/` subdirectory.
 
 ## Pair and connect
 
@@ -62,4 +70,4 @@ app/src/main/java/com/obdstudio/app/
 
 The app requests only BLUETOOTH_CONNECT on Android 12+. The ELM327 protocol and an adapter's advertised features **do not guarantee access** to proprietary modules. Future enhanced diagnostics need verified vehicle profile definitions (CAN headers, arbitration identifiers, UDS/KWP services, response framing, security limitations) and an adapter that supports them. The application does not attempt unsupported security bypasses or write operations to safety-critical systems.
 
-**Current verification:** Pure Kotlin protocol/parser files can be compiled separately with a local Kotlin compiler. The whole Android application has not yet been built or tested on a physical adapter in this workspace, which does not have Android SDK or Gradle installed.
+**Verification:** Version 0.1 was compiled through GitHub Actions and connected successfully to a Bluetooth ELM327 on a vehicle (live RPM). Version 0.2 requires its own full CI build and on-vehicle testing. The local workspace can compile Kotlin protocol classes but has no Android SDK.

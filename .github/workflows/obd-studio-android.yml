@@ -1,8 +1,8 @@
-name: Build OBD Studio debug APK
+name: Build OBD Studio Beta APK
 on:
   push:
     branches:
-      - feature/obd-studio-android-v0-1
+      - feature/obd-studio-android-v0-2
     paths:
       - 'OBDStudio/**'
       - '.github/workflows/obd-studio-android.yml'
@@ -29,6 +29,6 @@ jobs:
         run: gradle -p OBDStudio :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: OBDStudio-debug-apk
+          name: OBDStudio-Beta-v0.2-APK
           path: OBDStudio/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

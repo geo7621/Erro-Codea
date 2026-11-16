@@ -6,7 +6,7 @@
     <!-- Intentionally no INTERNET, location, camera, microphone or advertising permission. -->
     <application
         android:allowBackup="false"
-        android:label="OBD Studio"
+        android:label="OBD Studio Beta"
         android:theme="@style/Theme.OBDStudio"
         android:usesCleartextTraffic="false"
         android:supportsRtl="true">
