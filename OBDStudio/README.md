@@ -34,7 +34,7 @@ gradle :app:assembleDebug
 
 The unsigned-for-distribution debug APK will appear at `app/build/outputs/apk/debug/app-debug.apk`. Android Studio: **Build → Build APK(s)**.
 
-The folder `.github/workflows/android-debug.yml` also includes a reproducible build on GitHub Actions and uploads the debug APK artifact. It runs when this project is at the **repository root**, so move/copy this project's contents to the root of its own GitHub repository.
+The folder `.github/workflows/android-debug.yml` includes a reproducible build on GitHub Actions and uploads the debug APK artifact when this project is at the **repository root**. This temporary feature branch also includes a root-level GitHub workflow to build from its `OBDStudio/` subdirectory.
 
 ## Pair and connect
 
